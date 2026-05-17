@@ -88,6 +88,19 @@ class SalesforceClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def _create_content_document_link(self, content_document_id: str, linked_entity_id: str):
+        """ファイルを特定のレコード（カスタムオブジェクトなど）に紐付ける"""
+        path = f"/services/data/{self.API_VERSION}/sobjects/ContentDocumentLink"
+        payload = {
+            "ContentDocumentId": content_document_id,
+            "LinkedEntityId": linked_entity_id,
+            "ShareType": "V",  # 'V': Viewer, 'C': Collaborator, 'I': Inferred
+            "Visibility": "AllUsers" # 必要に応じて 'InternalUsers' などに変更
+        }
+        resp = await self.request("POST", path, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     async def request(self, method: str, path: str, **kwargs) -> httpx.Response:
         url = f"{SF_BASE_URL}{path}"
         client = self._get_client()
@@ -134,7 +147,7 @@ class SalesforceClient:
 
         return resp
 
-    async def upload_file_chunked(self, filepath: str, **extra):
+    async def upload_file_chunked(self, filepath: str, linked_entity_id: Optional[str] = None):
         """
         本番環境で最大2GBまでのファイルを安全に送信する分割アップロード
         """
@@ -156,9 +169,21 @@ class SalesforceClient:
                 )
                 part_number += 1
 
+        # 3. アップロードを確定（ContentDocumentが作成される）
         result = await self._commit_upload(session_id)
-        self.logger.info(event_message="sf_upload_complete", data={"file": filename, "result": result})
-        return result
+        content_document_id = result.get("id")
+
+        # 4. 指定されたレコードに紐付け
+        link_result = None
+        if linked_entity_id and content_document_id:
+            link_result = await self._create_content_document_link(content_document_id, linked_entity_id)
+            self.logger.info(
+                event_message="sf_file_linked",
+                data={"content_document_id": content_document_id, "linked_entity_id": linked_entity_id}
+            )
+
+        self.logger.info(event_message="sf_upload_complete", data={"file": filename, "content_document_id": content_document_id})
+        return {"upload": result, "link": link_result}
 
 async def http_request_with_retry(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
     """低レイヤのHTTPリトライロジックのみを担当"""
