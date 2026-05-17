@@ -1,0 +1,204 @@
+import asyncio
+import httpx
+
+from .salesforce_config import SF_HTTP_RETRY_COUNT, SF_HTTP_RETRY_DELAY
+
+from pathlib import Path
+
+import time
+import httpx
+from typing import Optional
+
+from .salesforce_config import (
+    SF_BASE_URL,
+    SF_TOKEN_LEEWAY,
+    SF_HTTP_TIMEOUT,
+)
+from app.utils.log_utils.trace_log import TraceLog
+from .salesforce_jwt import fetch_salesforce_token
+# from app.http_retry import http_request_with_retry
+
+class SalesforceClient:
+    def __init__(self, logger: TraceLog):
+        self.logger = logger
+        self._access_token: Optional[str] = None
+        self._expire_at: int = 0
+
+        self.CHUNK_SIZE = 5 * 1024 * 1024  # 5MB
+
+
+    async def _ensure_token(self) -> str:
+        now = int(time.time())
+        if self._access_token is None or now > (self._expire_at - SF_TOKEN_LEEWAY):
+            self.logger.info(
+                event_message="sf_token_refresh_start",
+                data={"now": now, "expire_at": self._expire_at},
+            )
+            self._access_token, self._expire_at = await fetch_salesforce_token(self.logger)
+            self.logger.info(
+                event_message="sf_token_refresh_done",
+                data={"expire_at": self._expire_at},
+            )
+        return self._access_token
+
+    async def create_content_version(self, filename: str, **extra):
+        payload = {
+            "Title": filename,
+            "PathOnClient": filename,
+            **extra,
+        }
+        resp = await self.request(
+            "POST",
+            "/services/data/v61.0/sobjects/ContentVersion",
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()["id"]
+
+    async def append_chunk(self, version_id: str, chunk: bytes, offset: int, total_size: int):
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Range": f"bytes {offset}-{offset + len(chunk) - 1}/{total_size}",
+        }
+
+        resp = await self.request(
+            "PATCH",
+            f"/services/data/v61.0/sobjects/ContentVersion/{version_id}/VersionData",
+            content=chunk,
+            headers=headers,
+        )
+        resp.raise_for_status()
+
+
+    async def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """
+        - path は `/services/data/v61.0/...` のようなパス
+        - Authorization ヘッダ付与
+        - 401 の場合は 1 回だけ token 再取得してリトライ
+        - リトライロジックは http_request_with_retry に委譲
+        """
+
+        token = await self._ensure_token()
+
+        headers = kwargs.pop("headers", {}) or {}
+        headers["Authorization"] = f"Bearer {token}"
+        headers.setdefault("Content-Type", "application/json")
+
+        url = f"{SF_BASE_URL}{path}"
+
+        self.logger.info(
+            event_message="sf_request",
+            data={"method": method, "url": url},
+        )
+
+        try:
+            resp = await http_request_with_retry(
+                method,
+                url,
+                headers=headers,
+                timeout=SF_HTTP_TIMEOUT,
+                **kwargs,
+            )
+        except httpx.RequestError as e:
+            self.logger.error(
+                event_message="sf_request_error",
+                data={"url": url, "error": str(e)},
+            )
+            raise
+
+        # 401 → token 再取得して 1 回だけ再試行
+        if resp.status_code == 401:
+            self.logger.error(
+                event_message="sf_unauthorized",
+                data={"url": url, "status": resp.status_code, "body": resp.text},
+            )
+
+            # 再取得
+            self._access_token, self._expire_at = await fetch_salesforce_token(self.logger)
+            headers["Authorization"] = f"Bearer {self._access_token}"
+
+            self.logger.info(
+                event_message="sf_retry_after_401",
+                data={"url": url},
+            )
+
+            resp = await http_request_with_retry(
+                method,
+                url,
+                headers=headers,
+                timeout=SF_HTTP_TIMEOUT,
+                **kwargs,
+            )
+
+        # 必要ならここで raise_for_status を統一
+        if resp.is_error:
+            self.logger.error(
+                event_message="sf_response_error",
+                data={"url": url, "status": resp.status_code, "body": resp.text},
+            )
+        else:
+            self.logger.info(
+                event_message="sf_response_ok",
+                data={"url": url, "status": resp.status_code},
+            )
+
+        return resp
+
+    async def upload_complete(self, version_id: str):
+        resp = await self.request(
+            "POST",
+            f"/services/data/v61.0/sobjects/ContentVersion/{version_id}/Complete",
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def upload_file_chunked(self, filepath: str, **extra):
+        filename = Path(filepath).name
+        version_id = await self.create_content_version(filename, **extra)
+
+        total_size = Path(filepath).stat().st_size
+        offset = 0
+
+        with open(filepath, "rb") as f:
+            while True:
+                chunk = f.read(self.CHUNK_SIZE)
+                if not chunk:
+                    break
+
+                await self.append_chunk(version_id, chunk, offset, total_size)
+                offset += len(chunk)
+
+                self.logger.info(
+                    event_message="sf_chunk_uploaded",
+                    data={"version_id": version_id, "offset": offset, "total": total_size},
+                )
+
+        result = await self.upload_complete(version_id)
+
+        self.logger.info(
+            event_message="sf_upload_complete",
+            data={"version_id": version_id},
+        )
+
+        return result
+
+
+async def http_request_with_retry(method: str, url: str, **kwargs) -> httpx.Response:
+    kwargs.pop("request_id", None)
+    kwargs.pop("download", None)
+
+    timeout = kwargs.pop("timeout", 30)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        last_exc = None
+        for attempt in range(SF_HTTP_RETRY_COUNT):
+            try:
+                resp = await client.request(method, url, **kwargs)
+                return resp
+            except httpx.RequestError as e:
+                last_exc = e
+                if attempt == SF_HTTP_RETRY_COUNT - 1:
+                    raise
+                await asyncio.sleep(SF_HTTP_RETRY_DELAY)
+
+    raise RuntimeError("unreachable")  # 型チェック対策

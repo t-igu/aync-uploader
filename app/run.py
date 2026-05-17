@@ -66,7 +66,7 @@ def supervisor():
     signal.signal(signal.SIGTERM, handle_signal)
 
     upload_queue = Queue()
-    worker_count = cpu_count() * 2
+    worker_count = cpu_count() * 2 - 1
 
     p_api = Process(target=start_api, args=(upload_queue, logger), name="api")
     processes.append(p_api)
