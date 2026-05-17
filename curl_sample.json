@@ -1,0 +1,20 @@
+{
+    "request": [
+        {
+            "id": "123456789012345678",
+            "filename": "C:/data/a.txt",
+            "filename_disp": "A File",
+            "encrypted_filepath": "a.enc",
+            "extension": "txt",
+            "username": "taro"
+        },
+        {
+            "id": "987654321098765432",
+            "filename": "C:/data/b.txt",
+            "filename_disp": "B File",
+            "encrypted_filepath": "b.enc",
+            "extension": "txt",
+            "username": "taro"
+        }
+    ]
+}

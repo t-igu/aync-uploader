@@ -1,0 +1,12 @@
+[project]
+name = "async-file-uploader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "litestar[jinja]>=2.21.1",
+    "structlog>=25.5.0",
+    "uvicorn>=0.47.0",
+    "watchlog>=0.1.2",
+]

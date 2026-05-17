@@ -1,0 +1,19 @@
+# Gitに、テキストファイルの改行コードを、自動で、賢く、処理させる
+* text=auto
+
+# 常に「LF」で管理したい、テキストファイルを、明示的に指定
+*.txt      text
+*.md       text
+*.json     text
+*.js       text
+*.py       text
+*.sh       text eol=lf
+
+# 常に「CRLF」で管理したい、Windows固有のファイルを指定
+*.bat      text eol=crlf
+*.ps1      text eol=crlf
+
+# Gitに、絶対、触らせたくない、バイナリファイルを指定
+*.png      binary
+*.jpg      binary
+*.pdf      binary

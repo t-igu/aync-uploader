@@ -1,0 +1,15 @@
+[app]
+service_name ="async_file_upload"
+# app_root は本番で書き換える
+app_root = "C:/workspace/python/github_projects/async_file_uploader"
+log_file ="C:/workspace/python/github_projects/async_file_uploader/logs/app.log"
+data_root = "C:/workspace/python/github_projects/async_file_uploader/data"
+
+[api]
+host="127.0.0.1"
+port=8800
+queue_limit = 10000
+
+[worker]
+max_retry = 3
+dlq_dir = "C:/workspace/python/github_projects/dead_letter"

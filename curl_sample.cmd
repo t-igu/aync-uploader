@@ -1,0 +1,1 @@
+curl -X POST "http://localhost:8800/upload" -H "Content-Type: application/json" -H "X-Request-ID: test-123" -d @request1.json

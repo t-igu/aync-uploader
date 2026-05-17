@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+test/
+
+*.egg-info
+
+# Virtual environments
+.venv
+
+# add
+*.log
+*_bkup.*
+
+samples/
+data/
+
+mock_app/
